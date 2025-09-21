@@ -31,6 +31,9 @@ Besides vision decomposition, We constructed two datasets: **Vsion-SR1-Cold-9K**
 </p>
 
 
+### ToDos:
+-- Deploy code support for Lora Training.
+
 ### 🔍 Dataset
 Our training dataset is sourced from 23 sources and evenly split across three main areas-- general visual understanding, science knowledge, multimodal mathematical reasoning.
 
