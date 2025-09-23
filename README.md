@@ -114,7 +114,7 @@ The supervised finetuning code is adopted from [LLaMA-Factory](https://github.co
 
 ### Download the filtered SFT format data
 ```
-python download-sft-data.py
+while ! python download-sft-data.py; do echo "Retrying..."; sleep 5; done
 ```
 
 #### Setup
