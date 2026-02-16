@@ -74,6 +74,26 @@ def extract_description(predict: str) -> Optional[str]:
         return predict
     return match.group(1).strip()
 
+def parse_key_slice_index(report_text: str) -> Optional[int]:
+    """
+    从第一跳生成的报告中解析关键帧索引。
+
+    约定：<key_slice>image N</key_slice> 中的 N 表示“多图输入序列中的第 N 张图”，从 1 开始。
+
+    支持：
+    - <key_slice>image 18</key_slice>
+    - image 18（无标签时取最后一次出现）
+    """
+    if not report_text:
+        return None
+    m = re.search(r"<key_slice>\s*image\s*(\d+)\s*</key_slice>", report_text, flags=re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    ms = re.findall(r"\bimage\s*(\d+)\b", report_text, flags=re.IGNORECASE)
+    if ms:
+        return int(ms[-1])
+    return None
+
 
 '''
 The prompt to do self eval
@@ -670,13 +690,61 @@ class RayPPOTrainer:
                         # print("resp_texts len:", len(resp_texts))
                         # print("Example question 0:", questions[0])
                         
-                        # 1.5) process the output texts. Make them their outputs as the inputs for the second round of generation.
-                        second_hop_inputs = [
-                            ABS_Verify_Prompt
-                                .replace("{Description}", extract_description(first_round_text))
-                                .replace("{Question}",   question.replace('<image>', ''))
-                            for first_round_text, question in zip(resp_texts, questions)
-                        ]
+                        # 1.5) second-hop generation for "key slice verification" (route A)
+                        # Goal: generate a detailed lesion analysis **based on the key slice image n only**.
+                        #
+                        # - Parse n from the first-round report (<key_slice>image n</key_slice>)
+                        # - Select the n-th image from the original multi_modal_data for this sample
+                        # - Run a second generation with a single image + text prompt
+
+                        # Fetch original multi-modal data from the batch (length B, one entry per sample)
+                        mm_arr = batch.non_tensor_batch.get("multi_modal_data", None)
+                        mm_list = None
+                        if mm_arr is not None:
+                            # mm_arr is usually a np.ndarray(dtype=object), each element like {"image": [PIL.Image, ...]}
+                            mm_list = mm_arr.tolist() if hasattr(mm_arr, "tolist") else list(mm_arr)
+
+                        # Expand mm_list to match resp_texts length (B*n) if needed
+                        if n > 1 and mm_list is not None:
+                            mm_list = [m for m in mm_list for _ in range(n)]
+
+                        second_hop_inputs: List[str] = []
+                        second_hop_mm_data: Optional[List[dict]] = [] if mm_list is not None else None
+                        use_multimodal_second_hop = (mm_list is not None) and (self.processor is not None)
+
+                        for j, (first_round_text, question) in enumerate(zip(resp_texts, questions)):
+                            key_idx = parse_key_slice_index(first_round_text) or 1
+
+                            # Build second-hop text prompt (natural language, not JSON)
+                            second_prompt = (
+                                f"In the previous multi-slice CT input, the report marked <key_slice>image {key_idx}</key_slice> "
+                                f"as the key slice that best shows the lesion. "
+                                f"Based ONLY on image {key_idx}, provide a detailed radiology-style analysis of the lesion, including: "
+                                f"(1) whether a tumor/lesion is present, (2) anatomical location (e.g., hepatic segment), "
+                                f"(3) approximate size (e.g., '3.3 x 2.6 cm'), and (4) attenuation/enhancement pattern (e.g., hypoattenuating)."
+                            )
+                            second_hop_inputs.append(second_prompt)
+
+                            if use_multimodal_second_hop and second_hop_mm_data is not None:
+                                try:
+                                    mm = mm_list[j]
+                                    imgs = mm.get("image", None) if isinstance(mm, dict) else None
+                                    if imgs is None:
+                                        raise ValueError("multi_modal_data missing 'image'")
+                                    if not isinstance(imgs, list):
+                                        imgs = [imgs]
+                                    if len(imgs) == 0:
+                                        raise ValueError("empty image list")
+
+                                    # Clamp key_idx into valid range [1, len(imgs)]
+                                    k = max(1, min(int(key_idx), len(imgs)))
+                                    second_hop_mm_data.append({"image": [imgs[k - 1]]})
+                                except Exception:
+                                    # Fallback to text-only second hop for the whole batch if any sample fails
+                                    use_multimodal_second_hop = False
+
+                        if not use_multimodal_second_hop:
+                            second_hop_mm_data = None
                         
                         
                         print('Example second hop input: ', second_hop_inputs[0])
@@ -685,11 +753,23 @@ class RayPPOTrainer:
                         # 2) build chat-templated prompts
                         prompts, raw_ids_list = [], []
                         for txt in second_hop_inputs:
-                            messages = [{"role": "user", "content": txt}]
-                            # messages = [{"role": "user", "content": "Tell me about large lanuage models in two sentences."}]
-                            prompt   = self.tokenizer.apply_chat_template(messages,
-                                                                        add_generation_prompt=True,
-                                                                        tokenize=False)
+                            if second_hop_mm_data is not None and self.processor is not None:
+                                # Multimodal single-image prompt: one image placeholder + text
+                                messages = [
+                                    {
+                                        "role": "user",
+                                        "content": [{"type": "image"}, {"type": "text", "text": txt}],
+                                    }
+                                ]
+                                prompt = self.processor.apply_chat_template(
+                                    messages, add_generation_prompt=True, tokenize=False
+                                )
+                            else:
+                                # Text-only fallback
+                                messages = [{"role": "user", "content": txt}]
+                                prompt = self.tokenizer.apply_chat_template(
+                                    messages, add_generation_prompt=True, tokenize=False
+                                )
                             prompts.append(prompt)
                             raw_ids  = self.tokenizer.encode(prompt, add_special_tokens=False)
                             raw_ids_list.append(raw_ids)
@@ -734,6 +814,11 @@ class RayPPOTrainer:
                                 attention_mask=attention_mask,
                                 position_ids=position_ids,
                                 raw_prompt_ids=raw_prompt_ids,
+                                **(
+                                    {"multi_modal_data": np.array(second_hop_mm_data, dtype=object)}
+                                    if second_hop_mm_data is not None
+                                    else {}
+                                ),
                             )
                         )
                         second_gen_batch.meta_info["n"] = 1          # <─ force n = 1

@@ -179,3 +179,14 @@ LLaMA-Factory-Cold-Start/data/cold_start//.LLaMA-Factory-Cold-Start/
 /.LLaMA-Factory-Cold-Start/
 LLaMA-Factory-Cold-Start/data/cold_start/
 Evaluation/Raw-Outputs/
+
+# Training logs and temporary files
+logs/
+ray_tmp/
+*.log
+*.pid
+
+# Data files (keep structure, ignore actual data)
+data/*.jsonl
+data/*.backup
+data/images/

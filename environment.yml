@@ -1,0 +1,34 @@
+name: vision-sr1-rl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - numpy
+    - pandas
+    - omegaconf
+    - pillow
+    - pyarrow>=15.0.0
+    - pylatexenc
+    - qwen-vl-utils
+    - codetiming
+    - mathruler
+    - liger-kernel
+    - datasets
+    - peft
+    - accelerate
+    - tensordict
+    - torchdata
+    - wandb
+    - ray[default]
+    - huggingface-hub
+    - filelock
+    - fsspec
+    - gitpython
+    - jinja2
+    - packaging
+    - psutil
+    - pyyaml
+

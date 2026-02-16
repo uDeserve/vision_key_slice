@@ -1,0 +1,128 @@
+# 测试数据RL训练配置 - Qwen3-VL-8B
+# 用于测试数据适配和流程验证
+
+data:
+  # 数据文件路径（转换后的JSONL文件）
+  train_files: ./data/test_data_train.jsonl  # 训练数据路径（需要转换后生成）
+  val_files: ./data/test_data_val.jsonl       # 验证数据路径（需要转换后生成）
+  prompt_key: question                        # prompt字段名
+  answer_key: ground_truth                    # ground truth字段名
+  image_key: images                          # 图像字段名
+  max_input_length: 8192                     # 最大输入长度
+  max_prompt_length: 1024                    # 最大prompt长度
+  max_response_length: 2048                  # 最大响应长度
+  rollout_batch_size: 64                     # rollout批次大小（8卡，必须能被actor global_batch_size整除）
+  val_batch_size: 64                         # 验证批次大小（8卡）
+  format_prompt: null                        # 格式prompt（如果需要）
+  override_chat_template: null
+  shuffle: true
+  seed: 42
+  max_pixels: 4194304                        # 最大像素数
+  min_pixels: 262144                        # 最小像素数
+  filter_overlong_prompts: false  # 暂时禁用，避免所有数据被过滤
+
+algorithm:
+  adv_estimator: grpo                        # 使用GRPO算法
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+
+worker:
+  actor:
+    global_batch_size: 64                   # 全局批次大小（8卡，必须能被rollout_batch_size整除）
+    micro_batch_size_per_device_for_update: 2  # 每个设备的更新批次大小
+    micro_batch_size_per_device_for_experience: 4  # 每个设备的经验批次大小
+    max_grad_norm: 1.0
+    padding_free: true
+    ulysses_sequence_parallel_size: 1
+    model:
+      model_path: Qwen/Qwen3-VL-8B-Instruct  # 使用Qwen3-VL-8B模型
+      enable_gradient_checkpointing: true
+      trust_remote_code: true                # Qwen3-VL需要trust_remote_code
+      freeze_vision_tower: false
+    optim:
+      lr: 1.0e-6                            # 学习率
+      weight_decay: 1.0e-2
+      strategy: adamw
+      lr_warmup_ratio: 0.0
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+    offload:
+      offload_params: true                   # 8B模型较大，启用参数offload
+      offload_optimizer: true                # 启用优化器offload
+
+  rollout:
+    max_num_batched_tokens: 15000
+    max_model_len: 8192
+    n: 4                                     # 每个prompt采样4个response
+    temperature: 1.0
+    top_p: 0.99
+    gpu_memory_utilization: 0.6             # GPU内存利用率
+    enforce_eager: false
+    enable_chunked_prefill: false
+    tensor_parallel_size: 1                 # 根据GPU数量调整
+    limit_images: 0
+    val_override_config:
+      temperature: 0.0
+      n: 1
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+    offload:
+      offload_params: false
+
+  reward:
+    reward_type: batch
+    reward_function: ./train_examples/reward_function/medical_reward.py:compute_score
+    reward_function_kwargs:
+      # Reward权重配置（三个独立reward的权重）
+      tumor_presence_weight: 0.2            # 肿瘤存在性Reward权重
+      key_frame_weight: 0.3                 # 关键帧验证Reward权重
+      fine_grained_weight: 0.5              # 细粒度准确性Reward权重
+      format_weight: 0.1                    # 格式权重
+      # 功能开关
+      enable_tumor_presence: true          # 启用肿瘤存在性奖励
+      enable_key_frame_verification: true  # 启用关键帧验证
+      enable_fine_grained_accuracy: true    # 启用细粒度准确性评估
+      # LLM配置（可选）
+      use_llm_for_fine_grained: false       # 是否使用LLM提取细粒度信息
+
+  val_reward:
+    reward_type: batch
+    reward_function: ./train_examples/reward_function/medical_reward.py:compute_score
+    reward_function_kwargs:
+      tumor_presence_weight: 0.2
+      key_frame_weight: 0.3
+      fine_grained_weight: 0.5
+      format_weight: 0.1
+      enable_tumor_presence: true
+      enable_key_frame_verification: true
+      enable_fine_grained_accuracy: true
+      use_llm_for_fine_grained: false
+
+trainer:
+  total_epochs: 2                           # 测试训练，减少epoch数
+  max_steps: null
+  project_name: medical_reward_test
+  experiment_name: qwen3vl_8b_test_data_grpo
+  logger: ["console"]                      # 日志记录器（如果配置了wandb，可以添加"wandb"）
+  nnodes: 1                                 # 节点数
+  n_gpus_per_node: 8                       # 每个节点的GPU数（8卡）
+  val_freq: 1                               # 验证频率（每1个epoch验证一次，测试用）
+  val_before_train: true                    # 训练前验证
+  val_only: false
+  val_generations_to_log: 3                # 验证时记录的生成数量
+  save_freq: 1                              # 保存频率（测试用，每个epoch保存）
+  save_limit: 3                             # 保存限制（只保留最近3个checkpoint）
+  save_checkpoint_path: ./saves/qwen3vl_8b_test
+  load_checkpoint_path: null                # 加载checkpoint路径（从原始模型开始，不加载checkpoint）
+  response_path: ./responses/qwen3vl_8b_test.jsonl
+
+
+

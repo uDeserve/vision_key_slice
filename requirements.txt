@@ -1,7 +1,15 @@
+# Vision-SR1 RL Training Dependencies
+# Note: Use setup.sh for installation, do not install directly from this file
+# Author: zywang
+
+# Core dependencies (installed via setup.sh with specific versions)
+vllm==0.8.4
+transformers==4.49.0
+
+# Base dependencies
 accelerate
 codetiming
 datasets
-flash-attn>=2.4.3
 liger-kernel
 mathruler
 numpy
@@ -15,6 +23,16 @@ qwen-vl-utils
 ray[default]
 tensordict
 torchdata
-transformers>=4.51.0
-vllm>=0.7.3
 wandb
+
+# HuggingFace
+huggingface-hub
+filelock
+fsspec
+
+# Utilities
+gitpython
+jinja2
+packaging
+psutil
+pyyaml

@@ -120,7 +120,12 @@ class RLHFDataset(Dataset, ImageProcessMixin):
             # when we use dataset builder, we should always refer to the train split
             self.dataset = load_dataset("parquet", data_dir=data_path, split="train")
         elif os.path.isfile(data_path):
-            self.dataset = load_dataset("parquet", data_files=data_path, split="train")
+            # 检测文件格式：如果是JSONL文件，使用json格式加载
+            if data_path.endswith(".jsonl"):
+                self.dataset = load_dataset("json", data_files=data_path, split="train")
+            else:
+                # 默认尝试parquet格式
+                self.dataset = load_dataset("parquet", data_files=data_path, split="train")
         else:
             # load remote dataset from huggingface hub
             self.dataset = load_dataset(data_path, split=data_split)
