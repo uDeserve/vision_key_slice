@@ -1,0 +1,130 @@
+# 医学影像报告生成任务训练配置
+# 基于流程图要求，实现关键帧验证和细粒度准确性Reward
+
+data:
+  # 数据文件路径（需要根据实际数据路径修改）
+  train_files: ./data/medical_train.jsonl  # 训练数据路径
+  val_files: ./data/medical_val.jsonl       # 验证数据路径
+  prompt_key: question                      # prompt字段名
+  answer_key: ground_truth                  # ground truth字段名（应为single_organ_report）
+  image_key: images                         # 图像字段名
+  max_input_length: 8192                    # 最大输入长度
+  max_prompt_length: 1024                   # 最大prompt长度
+  max_response_length: 2048                # 最大响应长度
+  rollout_batch_size: 32                    # rollout批次大小（根据GPU内存调整）
+  val_batch_size: 64                        # 验证批次大小
+  format_prompt: null                       # 格式prompt（如果需要）
+  override_chat_template: null
+  shuffle: true
+  seed: 42
+  max_pixels: 4194304                       # 最大像素数
+  min_pixels: 262144                       # 最小像素数
+  filter_overlong_prompts: true
+
+algorithm:
+  adv_estimator: grpo                       # 使用GRPO算法
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+
+worker:
+  actor:
+    global_batch_size: 64                   # 全局批次大小
+    micro_batch_size_per_device_for_update: 2
+    micro_batch_size_per_device_for_experience: 4
+    max_grad_norm: 1.0
+    padding_free: true
+    ulysses_sequence_parallel_size: 1
+    model:
+      model_path: Qwen/Qwen3-VL-2B-Instruct  # 使用Qwen3-VL模型
+      enable_gradient_checkpointing: true
+      trust_remote_code: false
+      freeze_vision_tower: false
+    optim:
+      lr: 1.0e-6                            # 学习率
+      weight_decay: 1.0e-2
+      strategy: adamw
+      lr_warmup_ratio: 0.0
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+    offload:
+      offload_params: true
+      offload_optimizer: true
+
+  rollout:
+    max_num_batched_tokens: 15000
+    max_model_len: 8192
+    n: 4                                     # 每个prompt采样4个response
+    temperature: 1.0
+    top_p: 0.99
+    gpu_memory_utilization: 0.6
+    enforce_eager: false
+    enable_chunked_prefill: false
+    tensor_parallel_size: 1                 # 根据GPU数量调整
+    limit_images: 0
+    val_override_config:
+      temperature: 0.0
+      n: 1
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+    offload:
+      offload_params: false
+
+  reward:
+    reward_type: batch
+    reward_function: ./train_examples/reward_function/medical_reward.py:compute_score
+    reward_function_kwargs:
+      # Reward权重配置（三个独立reward的权重）
+      tumor_presence_weight: 0.2            # 肿瘤存在性Reward权重（第一个reward，第一性）
+      key_frame_weight: 0.3                 # 关键帧验证Reward权重（第三个reward）
+      fine_grained_weight: 0.5              # 细粒度准确性Reward权重（第二个reward）
+      format_weight: 0.1                    # 格式权重（保留兼容性）
+      # 功能开关
+      enable_tumor_presence: true          # 启用肿瘤存在性奖励（第一个reward）
+      enable_key_frame_verification: true  # 启用关键帧验证（第三个reward）
+      enable_fine_grained_accuracy: true    # 启用细粒度准确性评估（第二个reward）
+      # LLM配置（可选，符合流程图要求）
+      use_llm_for_fine_grained: false       # 是否使用LLM提取细粒度信息（默认false，使用正则表达式）
+      # 如果use_llm_for_fine_grained=true，需要配置以下参数：
+      # llm_client: null                    # LLM客户端（需要在代码中配置）
+      # llm_model: "gpt-4"                  # LLM模型名称
+
+  val_reward:
+    reward_type: batch
+    reward_function: ./train_examples/reward_function/medical_reward.py:compute_score
+    reward_function_kwargs:
+      tumor_presence_weight: 0.2
+      key_frame_weight: 0.3
+      fine_grained_weight: 0.5
+      format_weight: 0.1
+      enable_tumor_presence: true
+      enable_key_frame_verification: true
+      enable_fine_grained_accuracy: true
+      use_llm_for_fine_grained: false
+
+trainer:
+  total_epochs: 10                          # 训练轮数
+  max_steps: null
+  project_name: medical_reward
+  experiment_name: medical_reward_GRPO_VL_TRAIN
+  logger: ["console", "wandb"]             # 日志记录器
+  nnodes: 1                                 # 节点数
+  n_gpus_per_node: 8                       # 每个节点的GPU数
+  val_freq: 5                               # 验证频率（每5个epoch验证一次）
+  val_before_train: true                    # 训练前验证
+  val_only: false
+  val_generations_to_log: 3                # 验证时记录的生成数量
+  save_freq: 10                             # 保存频率
+  save_limit: -1                            # 保存限制（-1表示不限制）
+  save_checkpoint_path: ./saves/medical_reward
+  load_checkpoint_path: null                # 加载checkpoint路径（如果需要继续训练）
+  response_path: ./responses/medical_reward.jsonl
+
+
